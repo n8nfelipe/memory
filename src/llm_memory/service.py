@@ -5,15 +5,15 @@ import json
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import bindparam, delete, func, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
-from llm_memory.db import engine
 from llm_memory.config import get_settings
+from llm_memory.db import engine
 from llm_memory.models import (
     ApiToken,
     CompactionProposal,
@@ -67,7 +67,7 @@ def _is_expired(memory: Memory) -> bool:
         return False
     expiry = memory.expires_at
     if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
+        expiry = expiry.replace(tzinfo=UTC)
     return expiry <= utcnow()
 
 
@@ -88,7 +88,7 @@ def _visible_scope_ids(session: Session, owner_id: str) -> dict[str, set[str]]:
 
 
 def _aware(value: datetime) -> datetime:
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def can_read(session: Session, memory: Memory, owner_id: str) -> bool:

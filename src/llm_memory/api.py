@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
@@ -27,12 +27,11 @@ from llm_memory.schemas import (
     HistoryEntry,
     MemoryCreate,
     MemoryCreated,
+    MemoryImportRequest,
     MemoryOut,
     MemoryPatch,
-    MemoryImportRequest,
     SearchRequest,
     SearchResponse,
-    SearchHit,
 )
 from llm_memory.service import (
     DEFAULT_OWNER,
@@ -42,8 +41,8 @@ from llm_memory.service import (
     delete_memory,
     memory_dict,
     owner_for_token,
-    purge_expired,
     preview_compaction,
+    purge_expired,
     require_memory,
     resolve_conflict,
     search_memories,
@@ -112,9 +111,12 @@ async def validation_error_handler(request: Request, _exc: RequestValidationErro
     })
 
 
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
 def get_principal(
+    session: SessionDep,
     authorization: Annotated[str | None, Header()] = None,
-    session: Session = Depends(get_session),
 ) -> str:
     settings = get_settings()
     if not settings.auth_required:
@@ -129,7 +131,6 @@ def get_principal(
     return owner
 
 
-SessionDep = Annotated[Session, Depends(get_session)]
 PrincipalDep = Annotated[str, Depends(get_principal)]
 
 
@@ -155,13 +156,13 @@ def list_memories(
 ) -> list[dict[str, object]]:
     if not 1 <= limit <= 100 or offset < 0:
         raise HTTPException(status_code=422, detail={"code": "invalid_pagination", "message": "Use limit 1-100 and offset >= 0"})
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stmt = select(Memory).where(Memory.status == status).order_by(Memory.created_at.desc(), Memory.id)
     if scope_id:
         stmt = stmt.where(Memory.scope_id == scope_id)
     memories = [m for m in session.scalars(stmt).all()
                 if can_read(session, m, owner)
-                and (m.expires_at is None or (m.expires_at.replace(tzinfo=timezone.utc)
+                and (m.expires_at is None or (m.expires_at.replace(tzinfo=UTC)
                                                if m.expires_at.tzinfo is None else m.expires_at) > now)]
     return [memory_dict(m) for m in memories[offset:offset + limit]]
 

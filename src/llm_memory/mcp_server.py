@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 

@@ -38,6 +38,7 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def initialize_database() -> None:
     from alembic import command
     from alembic.config import Config
+
     from llm_memory import models  # noqa: F401
 
     package_dir = Path(__file__).resolve().parent
@@ -59,6 +60,6 @@ def initialize_database() -> None:
             )
 
 
-def get_session() -> Generator[Session, None, None]:
+def get_session() -> Generator[Session]:
     with SessionLocal() as session:
         yield session

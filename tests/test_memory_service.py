@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -109,7 +109,7 @@ def test_expired_grant_is_not_authorized(session: Session) -> None:
     memory = new_memory(session, "Shared planning note", scope="team:alpha")
     session.add(Grant(
         id="expired-grant", owner_id="alice", recipient_id="bob", scope_id="team:alpha",
-        role="editor", expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+        role="editor", expires_at=datetime.now(UTC) - timedelta(days=1),
     ))
     session.commit()
 
@@ -172,7 +172,7 @@ def test_deleting_a_source_removes_derived_summary(session: Session) -> None:
 
 def test_expiry_purge_removes_expired_memories(session: Session) -> None:
     memory = MemoryCreate(
-        content="Temporary note", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
+        content="Temporary note", expires_at=datetime.now(UTC) - timedelta(seconds=1)
     )
     expired, _warnings = create_memory(session, memory, "alice")
 

@@ -7,14 +7,16 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from llm_memory import models  # noqa: F401
-from llm_memory import service
+from llm_memory import (
+    models,  # noqa: F401
+    service,
+)
 from llm_memory.config import Settings
 from llm_memory.db import Base
 
 
 @pytest.fixture
-def session_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[sessionmaker[Session], None, None]:
+def session_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[sessionmaker[Session]]:
     database_path = tmp_path / "test-memory.db"
     engine = create_engine(
         f"sqlite:///{database_path}",
@@ -49,6 +51,6 @@ def session_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generato
 
 
 @pytest.fixture
-def session(session_factory: sessionmaker[Session]) -> Generator[Session, None, None]:
+def session(session_factory: sessionmaker[Session]) -> Generator[Session]:
     with session_factory() as active_session:
         yield active_session
