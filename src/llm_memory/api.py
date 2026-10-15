@@ -69,7 +69,7 @@ _purge_lock = threading.Lock()
 def _request_id(request: Request) -> str:
     if not getattr(request.state, "request_id", None):
         request.state.request_id = str(uuid.uuid4())
-    return request.state.request_id
+    return str(request.state.request_id)
 
 
 @app.middleware("http")

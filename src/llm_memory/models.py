@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import ClassVar
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,7 +15,7 @@ def utcnow() -> datetime:
 class Memory(Base):
     __tablename__ = "memories"
     version: Mapped[int] = mapped_column(Integer, default=1)
-    __mapper_args__: ClassVar[dict[str, object]] = {
+    __mapper_args__ = {  # noqa: RUF012
         "version_id_col": version,
         "version_id_generator": False,
     }
