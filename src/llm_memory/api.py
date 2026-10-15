@@ -27,18 +27,18 @@ from llm_memory.continuity import (
 from llm_memory.db import SessionLocal, get_session, initialize_database
 from llm_memory.models import CompactionProposal, Grant, Memory, MemoryRelation, MemoryVersion
 from llm_memory.schemas import (
+    AgentSessionCreate,
+    AgentSessionOut,
     CompactionPreviewOut,
     CompactionPreviewRequest,
     ConflictResolutionRequest,
-    AgentSessionCreate,
-    AgentSessionOut,
     GrantCreate,
     GrantOut,
-    HistoryEntry,
     HandoffClaimRequest,
     HandoffCompleteRequest,
     HandoffCreate,
     HandoffOut,
+    HistoryEntry,
     MemoryCreate,
     MemoryCreated,
     MemoryImportRequest,
