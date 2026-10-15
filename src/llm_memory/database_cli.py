@@ -265,6 +265,16 @@ def purge_expired_command() -> None:
     typer.echo(f"Removed {removed} expired memories")
 
 
+@app.command("capture-opencode")
+def capture_opencode_command(
+    input_path: Annotated[Path, typer.Option("--input")],
+) -> None:
+    """Persist one Opencode plugin payload (session.created/idle/deleted)."""
+    from llm_memory.opencode_capture import main as capture_main
+
+    typer.echo(json.dumps(capture_main(input_path) or {}, ensure_ascii=False))
+
+
 @token_app.command("create")
 def token_create(
     owner_id: str = typer.Option(..., callback=_validate_owner_id, help="Owner identity for this token."),

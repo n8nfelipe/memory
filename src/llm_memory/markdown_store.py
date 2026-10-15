@@ -759,7 +759,14 @@ class MarkdownStore:
             self.append(state, writer, changes)
             return count
 
-    def capture_turn(self, session_id: str, role: str, content: str, tag: str | None) -> None:
+    def capture_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tag: str | None,
+        source_type: str = "codex_hook",
+    ) -> None:
         with self.transaction() as state:
             writer = self.writer(state, session_id)
             if tag and any(
@@ -776,7 +783,7 @@ class MarkdownStore:
                 "session_id": session_id,
                 "content": f"## {role.capitalize()}\n\n{content.strip()}",
                 "kind": "conversation",
-                "source": {"type": "codex_hook", "ref": tag},
+                "source": {"type": source_type, "ref": tag},
                 "confidence": "asserted",
                 "tags": [role, *([tag] if tag else [])],
                 "status": "active",

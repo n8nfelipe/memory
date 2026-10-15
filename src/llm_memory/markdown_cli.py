@@ -141,6 +141,16 @@ def purge_expired() -> None:
     typer.echo(f"Marked {MarkdownStore().purge_expired()} expired memories as deleted")
 
 
+@app.command("capture-opencode")
+def capture_opencode(
+    input_path: Annotated[Path, typer.Option("--input")],
+) -> None:
+    """Persist one Opencode plugin payload (session.created/idle/deleted)."""
+    from llm_memory.opencode_capture import main as capture_main
+
+    typer.echo(json.dumps(capture_main(input_path) or {}, ensure_ascii=False))
+
+
 @app.command()
 def commit(
     session_id: Annotated[str, typer.Option()],

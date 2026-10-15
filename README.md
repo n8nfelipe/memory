@@ -151,6 +151,16 @@ Os hooks respeitam `memory.toml`, `MEMORY_CONFIG` e `MEMORY_REPOSITORY`. Revise 
 os hooks no Codex quando solicitado. A captura guarda o texto da conversa; ela não faz
 commit ou push automático.
 
+### Captura automática de conversas do Opencode
+
+O plugin `.opencode/plugins/llm-memory-auto.js` (também instalado globalmente em
+`~/.config/opencode/plugins/`) escuta `session.created`, `session.idle` e
+`session.deleted` e chama `memory capture-opencode --input <json>` com a transcrição
+em texto já resolvida via SDK. Cada turno `user`/`assistant` vira uma memória
+`conversation` com `source_type: "opencode_hook"`; chamadas de ferramenta são
+ignoradas. `session.deleted` registra o handoff e encerra a sessão. Reinicie o
+Opencode após instalar/atualizar o plugin, pois plugins são carregados no startup.
+
 ## Integração MCP
 
 Configure o host MCP para iniciar `memory mcp`. O servidor usa `stdio` e o mesmo backend configurado para a API e a CLI.
