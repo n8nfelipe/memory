@@ -54,6 +54,43 @@ jobs:
         if: matrix.python-version == '3.13'
         run: uv build
 
+  tag-package-version:
+    name: Tag package version
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve package version
+        id: version
+        run: |
+          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Package version must use stable MAJOR.MINOR.PATCH SemVer: $VERSION" >&2
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag if the package version is new
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          TAG="v${PACKAGE_VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; no new version tag is needed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
+          git push origin "refs/tags/${TAG}"
+
   prepare-release:
     name: Set version and create SemVer tag
     if: >-
