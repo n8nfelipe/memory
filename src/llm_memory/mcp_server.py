@@ -7,8 +7,24 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from llm_memory.config import get_settings
+from llm_memory.continuity import (
+    claim_next_handoff,
+    complete_handoff,
+    create_handoff,
+    create_session,
+    handoff_dict,
+    session_dict,
+)
 from llm_memory.db import SessionLocal, initialize_database
-from llm_memory.schemas import Confidence, MemoryCreate, MemoryPatch, SourceInput
+from llm_memory.schemas import (
+    AgentSessionCreate,
+    Confidence,
+    HandoffCreate,
+    MemoryCreate,
+    MemoryPatch,
+    SourceInput,
+)
+from llm_memory.scope import project_for_directory
 from llm_memory.service import (
     DEFAULT_OWNER,
     apply_compaction,
@@ -31,10 +47,22 @@ def build_server() -> MCPServer:
     server = MCPServer("LLM Memory")
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True))
-    def memory_search(query: str, limit: int = 5, scope_id: str | None = None) -> list[dict[str, object]]:
+    def memory_search(
+        query: str,
+        limit: int = 5,
+        scope_id: str | None = None,
+        workspace_id: str = "default",
+        project_id: str | None = None,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, object]]:
         """Search authorized local memories and return source and confidence metadata."""
         with SessionLocal() as session:
-            rows = search_memories(session, DEFAULT_OWNER, query, scope_id, max(1, min(limit, 50)))
+            rows = search_memories(
+                session, DEFAULT_OWNER, query, scope_id, max(1, min(limit, 50)),
+                workspace_id=workspace_id, project_id=project_id or project_for_directory(),
+                agent_id=agent_id, session_id=session_id,
+            )
             return [cast(dict[str, object], _jsonable({
                 "memory": memory_dict(memory), "score": score, "reason": reason,
             }))
@@ -51,11 +79,17 @@ def build_server() -> MCPServer:
 
     @server.tool()
     def memory_create(content: str, kind: str = "fact", confidence: Confidence = "unverified",
-                      tags: list[str] | None = None, source_type: str = "mcp") -> dict[str, object]:
+                      tags: list[str] | None = None, source_type: str = "mcp",
+                      workspace_id: str = "default", project_id: str | None = None,
+                      agent_id: str | None = None, session_id: str | None = None) -> dict[str, object]:
         """Save a memory for the local owner."""
         data = MemoryCreate(
             content=content,
             kind=kind,
+            workspace_id=workspace_id,
+            project_id=project_id or project_for_directory(),
+            agent_id=agent_id,
+            session_id=session_id,
             confidence=confidence,
             tags=tags or [],
             source=SourceInput(type=source_type),
@@ -66,6 +100,58 @@ def build_server() -> MCPServer:
                 dict[str, object],
                 _jsonable({"memory": memory_dict(memory), "warnings": warnings}),
             )
+
+    @server.tool()
+    def memory_session_start(
+        agent_id: str,
+        title: str = "",
+        workspace_id: str = "default",
+        project_id: str | None = None,
+        external_id: str | None = None,
+    ) -> dict[str, object]:
+        """Start a project-scoped agent session without capturing its transcript."""
+        data = AgentSessionCreate(
+            agent_id=agent_id, title=title, workspace_id=workspace_id,
+            project_id=project_id or project_for_directory(), external_id=external_id,
+        )
+        with SessionLocal() as session:
+            return cast(dict[str, object], _jsonable(session_dict(create_session(session, DEFAULT_OWNER, data))))
+
+    @server.tool()
+    def memory_session_handoff(
+        session_id: str,
+        summary: str,
+        decisions: list[str] | None = None,
+        blockers: list[str] | None = None,
+        next_steps: list[str] | None = None,
+        to_agent: str | None = None,
+    ) -> dict[str, object]:
+        """Close a session and store a structured handoff for the same project."""
+        data = HandoffCreate(
+            summary=summary, decisions=decisions or [], blockers=blockers or [],
+            next_steps=next_steps or [], to_agent=to_agent,
+        )
+        with SessionLocal() as session:
+            item = create_handoff(session, DEFAULT_OWNER, session_id, data)
+            return cast(dict[str, object], _jsonable(handoff_dict(item)))
+
+    @server.tool()
+    def memory_handoff_claim(agent_id: str, project_id: str | None = None,
+                             workspace_id: str = "default") -> dict[str, object]:
+        """Claim the oldest pending handoff in this project exactly once."""
+        with SessionLocal() as session:
+            item = claim_next_handoff(
+                session, DEFAULT_OWNER, workspace_id,
+                project_id or project_for_directory(), agent_id,
+            )
+            return cast(dict[str, object], _jsonable(handoff_dict(item)))
+
+    @server.tool()
+    def memory_handoff_complete(handoff_id: str, agent_id: str) -> dict[str, object]:
+        """Complete a handoff claimed by this agent."""
+        with SessionLocal() as session:
+            item = complete_handoff(session, DEFAULT_OWNER, handoff_id, agent_id)
+            return cast(dict[str, object], _jsonable(handoff_dict(item)))
 
     @server.tool(annotations=ToolAnnotations(destructive_hint=True))
     def memory_delete(memory_id: str, confirm: bool) -> dict[str, str]:

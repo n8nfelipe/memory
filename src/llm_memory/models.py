@@ -23,6 +23,10 @@ class Memory(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(200), index=True)
     scope_id: Mapped[str] = mapped_column(String(200), index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(200), index=True, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
     content: Mapped[str] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(60), default="fact")
     source_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -93,3 +97,54 @@ class CompactionProposal(Base):
     estimated_bytes_after: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MemoryEmbedding(Base):
+    __tablename__ = "memory_embeddings"
+
+    memory_id: Mapped[str] = mapped_column(
+        ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True
+    )
+    model: Mapped[str] = mapped_column(String(200))
+    vector: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+    __table_args__ = (UniqueConstraint("owner_id", "external_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(200), index=True)
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    workspace_id: Mapped[str] = mapped_column(String(200), default="default", index=True)
+    project_id: Mapped[str] = mapped_column(String(200), index=True)
+    agent_id: Mapped[str] = mapped_column(String(200), index=True)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Handoff(Base):
+    __tablename__ = "handoffs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    owner_id: Mapped[str] = mapped_column(String(200), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(200), index=True)
+    project_id: Mapped[str] = mapped_column(String(200), index=True)
+    from_agent: Mapped[str] = mapped_column(String(200))
+    to_agent: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    summary: Mapped[str] = mapped_column(Text)
+    decisions: Mapped[str] = mapped_column(Text, default="[]")
+    blockers: Mapped[str] = mapped_column(Text, default="[]")
+    next_steps: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    claimed_by_agent: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

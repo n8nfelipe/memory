@@ -26,11 +26,41 @@ curl -X POST http://127.0.0.1:8765/v1/search \
   -d '{"query":"idioma de resposta"}'
 ```
 
+## Integração Python para agentes
+
+O cliente Python usa a API REST existente e não depende de um framework de agentes:
+
+```python
+from llm_memory.client import MemoryClient
+
+memory = MemoryClient(token="...")  # omita token no modo local sem autenticação
+session = memory.start_session("codex", title="Adicionar busca semântica")
+memory.remember(
+    "Prefere respostas em português.",
+    kind="preference",
+    confidence="asserted",
+    source_type="conversation",
+    source_ref="session-123",
+)
+
+# Inclua o contexto recuperado nas instruções da próxima chamada ao seu LLM.
+context = memory.context("idioma preferido", limit=5, max_chars=4_000)
+handoff = memory.create_handoff(
+    "Busca semântica implementada; falta validar com corpus maior.",
+    decisions=["Embeddings são opt-in"],
+    next_steps=["Executar o benchmark de recuperação"],
+)
+```
+
+O cliente resolve automaticamente o nome do projeto pelo repositório Git atual (ou pelo diretório atual fora de um repositório). `start_session` cria uma sessão; `create_handoff` a encerra e guarda resumo, decisões, bloqueios e próximos passos. Outro agente do mesmo projeto pode chamar `start_session` e `claim_next_handoff` para receber o handoff pendente. O serviço guarda apenas os campos estruturados enviados; não captura transcrições ou chamadas de ferramenta.
+
+`remember` grava uma memória explícita. `context` busca resultados e limita o texto para controlar o orçamento de contexto. Configure `base_url` para apontar para uma instância remota autenticada.
+
 ## Integração MCP
 
 Configure o host MCP para iniciar `memory mcp`. O servidor usa `stdio` e aponta para o mesmo banco local da API e da CLI.
 
-Ferramentas de leitura: `memory_search`, `memory_get`, `memory_history`, `memory_compaction_preview`. Escrita: `memory_create`, `memory_update`. Administrativas (exigem `confirm=true`): `memory_delete`, `memory_compaction_apply`, `memory_share`, `memory_resolve_conflict`.
+Ferramentas de leitura: `memory_search`, `memory_get`, `memory_history`, `memory_compaction_preview`. Escrita: `memory_create`, `memory_update`, `memory_session_start`, `memory_session_handoff`. `memory_handoff_claim` reivindica atomicamente o handoff mais antigo do projeto; `memory_handoff_complete` encerra o handoff reivindicado. Administrativas (exigem `confirm=true`): `memory_delete`, `memory_compaction_apply`, `memory_share`, `memory_resolve_conflict`.
 
 ## Uso compartilhado
 
@@ -57,13 +87,25 @@ CLI equivalente (dono local): `memory export --output backup.json`, `memory impo
 
 `MEMORY_DATABASE_URL` aceita URL SQLite ou PostgreSQL. `MEMORY_AUTH_REQUIRED=true` exige token bearer nas chamadas HTTP. Tokens são criados com `memory token create --owner-id <id>`; o valor do token só é exibido na criação.
 
-Políticas opcionais: `MEMORY_MAX_ENTRIES_PER_OWNER`, `MEMORY_MAX_BYTES_PER_OWNER`, `MEMORY_DEFAULT_TTL_DAYS` e `MEMORY_ALLOWED_KINDS` (lista separada por vírgulas). Limites `0` desabilitam o limite de contagem/tamanho; TTL vazio mantém memórias sem expiração padrão. `memory purge-expired` remove vencidas e resumos derivados; a API também executa essa limpeza periodicamente.
+Políticas opcionais: `MEMORY_MAX_ENTRIES_PER_OWNER`, `MEMORY_MAX_BYTES_PER_OWNER`, `MEMORY_DEFAULT_TTL_DAYS` e `MEMORY_ALLOWED_KINDS` (lista separada por vírgulas). Limites `0` desabilitam o limite de contagem/tamanho; TTL vazio mantém memórias sem expiração padrão. Para busca vetorial opcional, configure `MEMORY_EMBEDDING_URL`, `MEMORY_EMBEDDING_MODEL` e, quando exigido pelo endpoint, `MEMORY_EMBEDDING_API_KEY`. O conteúdo e a consulta são enviados a esse endpoint; deixe a URL vazia para manter o processamento local. `memory purge-expired` remove vencidas e resumos derivados; a API também executa essa limpeza periodicamente.
 
 Não exponha a API em rede sem autenticação e TLS. O modo local não exige credenciais e deve permanecer vinculado a loopback.
 
 ## Estado
 
-Implementação inicial: armazenamento, ciclo de vida, busca lexical, permissões básicas, API, CLI e servidor MCP. A sincronização offline e os embeddings não fazem parte desta versão.
+Implementação: armazenamento, ciclo de vida, busca lexical, sessões e handoffs estruturados, escopo contextual por workspace/projeto/agente/sessão, permissões básicas, API, cliente Python, CLI e servidor MCP. A busca semântica é opcional e requer configurar `MEMORY_EMBEDDING_URL`; sem essa configuração, nenhum conteúdo é enviado a um provedor. Extração automática de memórias e sincronização offline não fazem parte desta versão.
+
+Para ativar embeddings com um endpoint compatível com OpenAI, configure `MEMORY_EMBEDDING_URL` (por exemplo, `https://api.openai.com/v1/embeddings`), `MEMORY_EMBEDDING_MODEL` e `MEMORY_EMBEDDING_API_KEY`. O índice é preenchido ao gravar novas memórias e sob demanda na busca para memórias existentes. A busca combina os rankings lexical e vetorial; se o endpoint falhar, usa a busca lexical.
+
+## Benchmark de recuperação
+
+Com a API iniciada, execute o corpus fixo em português. O script cria e remove as memórias de benchmark em um escopo isolado e informa Recall@K, MRR e latência:
+
+```sh
+uv run python benchmarks/retrieval.py --k 5
+```
+
+Para uma instância autenticada, use `--url` e `--token` ou defina `MEMORY_API_URL` e `MEMORY_API_TOKEN`.
 
 ## Testes
 

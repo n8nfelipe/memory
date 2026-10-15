@@ -8,17 +8,25 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import bindparam, delete, func, select, text
+from sqlalchemy import bindparam, delete, func, or_, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from llm_memory.config import get_settings
 from llm_memory.db import engine
+from llm_memory.embeddings import (
+    EmbeddingProviderError,
+    cosine_similarity,
+    embed_texts,
+    ensure_embeddings,
+    store_embedding,
+)
 from llm_memory.models import (
     ApiToken,
     CompactionProposal,
     Grant,
     Memory,
+    MemoryEmbedding,
     MemoryRelation,
     MemoryVersion,
     utcnow,
@@ -49,6 +57,10 @@ def memory_dict(memory: Memory) -> dict[str, object]:
         "id": memory.id,
         "owner_id": memory.owner_id,
         "scope_id": memory.scope_id,
+        "workspace_id": memory.workspace_id,
+        "project_id": memory.project_id,
+        "agent_id": memory.agent_id,
+        "session_id": memory.session_id,
         "content": memory.content,
         "kind": memory.kind,
         "source": {"type": memory.source_type or "manual", "ref": memory.source_ref},
@@ -147,6 +159,30 @@ def _remove_index(session: Session, memory_id: str) -> None:
 def create_memory(session: Session, data: MemoryCreate, owner_id: str) -> tuple[Memory, list[str]]:
     scope_id = data.scope_id or f"private:{owner_id}"
     settings = get_settings()
+    context = {
+        "workspace_id": data.workspace_id,
+        "project_id": data.project_id,
+        "agent_id": data.agent_id,
+        "session_id": data.session_id,
+    }
+    if data.session_id:
+        from llm_memory.models import AgentSession
+
+        active_session = session.scalar(select(AgentSession).where(
+            AgentSession.id == data.session_id,
+            AgentSession.owner_id == owner_id,
+            AgentSession.status == "active",
+        ))
+        if active_session is None:
+            raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Active session not found"})
+        expected = {
+            "workspace_id": active_session.workspace_id,
+            "project_id": active_session.project_id,
+            "agent_id": active_session.agent_id,
+        }
+        if any(context[key] not in (None, expected[key]) for key in expected):
+            raise HTTPException(status_code=422, detail={"code": "session_scope_mismatch", "message": "Memory scope must match its session"})
+        context.update(expected)
     if settings.allowed_kinds and data.kind not in settings.allowed_kinds:
         raise HTTPException(status_code=422, detail={"code": "kind_not_allowed", "message": "Memory kind is not allowed by policy"})
     existing_count = session.scalar(select(func.count()).select_from(Memory).where(Memory.owner_id == owner_id)) or 0
@@ -206,6 +242,7 @@ def create_memory(session: Session, data: MemoryCreate, owner_id: str) -> tuple[
         id=new_id(),
         owner_id=owner_id,
         scope_id=scope_id,
+        **context,
         content=data.content,
         kind=data.kind,
         source_type=data.source.type,
@@ -222,8 +259,11 @@ def create_memory(session: Session, data: MemoryCreate, owner_id: str) -> tuple[
         candidate.status = "conflict"
     session.flush()
     _index_memory(session, memory)
+    embedding_created = store_embedding(session, memory, settings)
     session.commit()
     session.refresh(memory)
+    if settings.embedding_url and not embedding_created:
+        warnings.append("embedding_unavailable")
     return memory, warnings
 
 
@@ -236,6 +276,7 @@ def update_memory(session: Session, memory: Memory, data: MemoryPatch, actor: st
             session.add(MemoryVersion(id=new_id(), memory_id=memory.id, version=memory.version,
                                       content=memory.content, changed_by=actor))
             memory.content = str(changes["content"]).strip()
+            session.execute(delete(MemoryEmbedding).where(MemoryEmbedding.memory_id == memory.id))
         if "kind" in changes and changes["kind"] is not None:
             memory.kind = str(changes["kind"])
         if "confidence" in changes and changes["confidence"] is not None:
@@ -247,6 +288,8 @@ def update_memory(session: Session, memory: Memory, data: MemoryPatch, actor: st
         memory.version += 1
         memory.updated_at = utcnow()
         _index_memory(session, memory)
+        if "content" in changes:
+            store_embedding(session, memory, get_settings())
         session.commit()
     except StaleDataError as exc:
         session.rollback()
@@ -255,13 +298,45 @@ def update_memory(session: Session, memory: Memory, data: MemoryPatch, actor: st
     return memory
 
 
-def search_memories(session: Session, owner_id: str, query: str, scope_id: str | None, limit: int,
-                    include_archived: bool = False) -> list[tuple[Memory, float, str]]:
+def search_memories(
+    session: Session,
+    owner_id: str,
+    query: str,
+    scope_id: str | None,
+    limit: int,
+    include_archived: bool = False,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+) -> list[tuple[Memory, float, str]]:
     statuses = ["active", "conflict"] + (["archived"] if include_archived else [])
     stmt = select(Memory).where(Memory.status.in_(statuses))
     if scope_id:
         stmt = stmt.where(Memory.scope_id == scope_id)
+    if workspace_id:
+        stmt = stmt.where(or_(Memory.workspace_id.is_(None), Memory.workspace_id == workspace_id))
+    if project_id:
+        stmt = stmt.where(or_(Memory.project_id.is_(None), Memory.project_id == project_id))
+    if agent_id:
+        stmt = stmt.where(or_(Memory.agent_id.is_(None), Memory.agent_id == agent_id))
+    if session_id:
+        stmt = stmt.where(or_(Memory.session_id.is_(None), Memory.session_id == session_id))
     candidates = [m for m in session.scalars(stmt).all() if can_read(session, m, owner_id) and not _is_expired(m)]
+    if not candidates:
+        return []
+    settings = get_settings()
+    semantic_vectors: dict[str, list[float]] = {}
+    query_vector: list[float] | None = None
+    if settings.embedding_url:
+        semantic_vectors = ensure_embeddings(session, candidates, settings)
+        if semantic_vectors:
+            try:
+                query_vector = embed_texts([query], settings)[0]
+            except (EmbeddingProviderError, IndexError, ValueError):
+                # A configured but unavailable semantic provider must not disable lexical recall.
+                query_vector = None
+    fts_positions: dict[str, int] = {}
     if engine.dialect.name == "sqlite":
         terms = [term for term in re.findall(r"[\w-]+", query, flags=re.UNICODE) if term]
         if terms:
@@ -274,21 +349,62 @@ def search_memories(session: Session, owner_id: str, query: str, scope_id: str |
                 "WHERE memory_fts MATCH :query AND memory_id IN :allowed ORDER BY rank"
             ).bindparams(bindparam("allowed", expanding=True))
             ids = session.execute(statement, {"query": match_query, "allowed": allowed_ids}).all()
-            ranks = {row.memory_id: float(row.rank) for row in ids}
-            candidates = [m for m in candidates if m.id in ranks]
-            candidates.sort(key=lambda m: ranks[m.id])
-            return [(m, 1.0 / (1.0 + abs(ranks[m.id])), "FTS5 lexical match") for m in candidates[:limit]]
+            fts_positions = {row.memory_id: position for position, row in enumerate(ids)}
+            if not query_vector:
+                candidates = [m for m in candidates if m.id in fts_positions]
     else:
         tokens = [term for term in re.findall(r"[\w-]+", query.casefold()) if term]
-        candidates = [m for m in candidates if any(token in (m.content + " " + m.tags).casefold() for token in tokens)]
+        if not query_vector:
+            candidates = [m for m in candidates if any(token in (m.content + " " + m.tags).casefold() for token in tokens)]
     query_tokens = set(re.findall(r"[\w-]+", query.casefold()))
     scored: list[tuple[Memory, float, str]] = []
+    lexical_scores: dict[str, float] = {}
     for memory in candidates:
         content_tokens = set(re.findall(r"[\w-]+", (memory.content + " " + memory.tags).casefold()))
         overlap = len(query_tokens & content_tokens)
-        score = overlap / max(len(query_tokens), 1)
+        overlap_score = overlap / max(len(query_tokens), 1)
+        if fts_positions and memory.id in fts_positions:
+            # Fuse FTS5's BM25 ordering with token coverage. Rank fusion keeps
+            # scores comparable even when the raw BM25 range changes by corpus.
+            fts_rank_score = 1.0 / (fts_positions[memory.id] + 1)
+            score = 0.7 * fts_rank_score + 0.3 * overlap_score
+        else:
+            score = overlap_score
         if score:
-            scored.append((memory, score, "token_overlap"))
+            lexical_scores[memory.id] = score
+    semantic_scores: dict[str, float] = {}
+    if query_vector:
+        for memory in candidates:
+            vector = semantic_vectors.get(memory.id)
+            if vector is not None:
+                similarity = cosine_similarity(query_vector, vector)
+                if similarity > 0.1:
+                    semantic_scores[memory.id] = similarity
+    if semantic_scores:
+        lexical_order = sorted(lexical_scores, key=lambda item: lexical_scores[item], reverse=True)
+        semantic_order = sorted(semantic_scores, key=lambda item: semantic_scores[item], reverse=True)
+        lexical_ranks = {memory_id: rank for rank, memory_id in enumerate(lexical_order)}
+        semantic_ranks = {memory_id: rank for rank, memory_id in enumerate(semantic_order)}
+        by_id = {memory.id: memory for memory in candidates}
+        for memory_id, memory in by_id.items():
+            lexical_component = (
+                0.5 * 61 / (60 + lexical_ranks[memory_id] + 1)
+                if memory_id in lexical_ranks else 0.0
+            )
+            semantic_component = (
+                0.5 * 61 / (60 + semantic_ranks[memory_id] + 1)
+                if memory_id in semantic_ranks else 0.0
+            )
+            score = lexical_component + semantic_component
+            if score:
+                reason = "hybrid_lexical_semantic" if memory_id in lexical_ranks else "semantic_similarity"
+                scored.append((memory, score, reason))
+    else:
+        for memory in candidates:
+            score = lexical_scores.get(memory.id, 0.0)
+            if score:
+                reason = "FTS5 lexical match" if fts_positions else "token_overlap"
+                scored.append((memory, score, reason))
     scored.sort(key=lambda item: item[1], reverse=True)
     return scored[:limit]
 
@@ -319,6 +435,7 @@ def delete_memory(session: Session, memory: Memory) -> None:
         pending.extend(session.scalars(select(MemoryRelation.derived_id).where(MemoryRelation.source_id == memory_id)).all())
     for memory_id in visited:
         _remove_index(session, memory_id)
+    session.execute(delete(MemoryEmbedding).where(MemoryEmbedding.memory_id.in_(visited)))
     session.execute(delete(MemoryRelation).where(
         (MemoryRelation.source_id.in_(visited)) | (MemoryRelation.derived_id.in_(visited))))
     session.execute(delete(MemoryVersion).where(MemoryVersion.memory_id.in_(visited)))
@@ -379,6 +496,14 @@ def preview_compaction(session: Session, owner_id: str, memory_ids: list[str], p
     scopes = {m.scope_id for m in memories}
     if len(scopes) != 1:
         raise HTTPException(status_code=422, detail={"code": "scope_mismatch", "message": "Sources must share a scope"})
+    contexts = {
+        (m.workspace_id, m.project_id, m.agent_id, m.session_id)
+        for m in memories
+    }
+    if len(contexts) != 1:
+        raise HTTPException(status_code=422, detail={
+            "code": "context_mismatch", "message": "Sources must share a workspace, project, agent and session"
+        })
     proposal = CompactionProposal(
         id=new_id(), owner_id=owner_id, scope_id=memories[0].scope_id,
         source_ids=json.dumps(memory_ids), proposed_content=proposed_content.strip(),
@@ -399,12 +524,15 @@ def apply_compaction(session: Session, owner_id: str, proposal_id: str) -> Memor
     sources = [require_memory(session, item, owner_id, edit=True) for item in json.loads(proposal.source_ids)]
     derived = Memory(
         id=new_id(), owner_id=owner_id, scope_id=proposal.scope_id,
+        workspace_id=sources[0].workspace_id, project_id=sources[0].project_id,
+        agent_id=sources[0].agent_id, session_id=sources[0].session_id,
         content=proposal.proposed_content, kind="summary", source_type="compaction",
         source_ref=proposal.id, confidence="inferred", tags="[]", status="active",
     )
     session.add(derived)
     session.flush()
     _index_memory(session, derived)
+    store_embedding(session, derived, get_settings())
     for source in sources:
         source.status = "archived"
         source.updated_at = utcnow()

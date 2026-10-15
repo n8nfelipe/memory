@@ -15,6 +15,9 @@ class Settings:
     max_bytes_per_owner: int
     default_ttl_days: int | None
     allowed_kinds: frozenset[str]
+    embedding_url: str | None = None
+    embedding_model: str = "text-embedding-3-small"
+    embedding_api_key: str | None = None
 
 
 def get_settings() -> Settings:
@@ -34,4 +37,7 @@ def get_settings() -> Settings:
         allowed_kinds=frozenset(
             value.strip() for value in os.getenv("MEMORY_ALLOWED_KINDS", "").split(",") if value.strip()
         ),
+        embedding_url=os.getenv("MEMORY_EMBEDDING_URL") or None,
+        embedding_model=os.getenv("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small"),
+        embedding_api_key=os.getenv("MEMORY_EMBEDDING_API_KEY") or None,
     )

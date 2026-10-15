@@ -1,8 +1,8 @@
 # Plano técnico — Memória controlável para LLMs
 
 - Especificação de referência: [spec.md](spec.md)
-- Versão/data: 0.3 — 2026-10-15
-- Estado: implementação inicial no workspace; validação técnica e de produto pendente
+- Versão/data: 0.4 — 2026-10-15
+- Estado: evolução implementada no workspace; validação técnica e de produto pendente
 
 ## Resumo da proposta
 
@@ -10,17 +10,20 @@ Construir um serviço de memória local-first em Python. Um único núcleo de do
 
 ## Estado da implementação
 
-Código criado no workspace para pacote Python, migração inicial Alembic, SQLite/FTS5, API REST, CLI, MCP via `stdio`, armazenamento de versões, proveniência, busca, quotas/TTL configuráveis, grants, tokens bearer, compactação com resumo fornecido pelo operador, importação/exportação e configuração Docker Compose para PostgreSQL. Testes unitários foram escritos para as regras centrais, mas não foram executados; não há evidência de execução do serviço ou dos critérios de aceite.
+Código criado no workspace para pacote Python, migrações Alembic, SQLite/FTS5, API REST, CLI, MCP via `stdio`, armazenamento de versões, proveniência, busca, quotas/TTL configuráveis, grants, tokens bearer, compactação com resumo fornecido pelo operador, importação/exportação, cliente Python e configuração Docker Compose para PostgreSQL. A evolução atual adiciona sessões e handoffs estruturados, escopo contextual e embeddings opcionais compatíveis com OpenAI. Testes unitários foram escritos para regras anteriores; nenhuma validação desta evolução foi executada.
 
-Limites conhecidos da primeira implementação:
+Limites conhecidos da implementação atual:
 
-- Não há teste executado de instalação, execução, segurança, migração ou benchmark. A compatibilidade prática da stack ainda não foi verificada.
+- Não há teste executado desta evolução, nem validação operacional de sessão, concorrência de handoff, migração ou busca semântica. O serviço e os critérios de aceite continuam sem evidência de execução.
 - O detector de conflitos é heurístico e só emite avisos de possível duplicidade/semelhança; não determina contradições em linguagem natural. A resolução disponível é uma decisão explícita do proprietário (manter um, o outro ou ambos).
 - Compactação não chama um LLM: a aplicação/operador envia o texto proposto para prévia e confirmação. Não há avaliação automática de fidelidade sem corpus de referência.
 - MCP está implementado para processo local `stdio`; MCP remoto por Streamable HTTP ainda não está conectado. A API REST autenticada atende deploy compartilhado.
-- PostgreSQL usa busca lexical por tokens em memória; FTS5 está disponível apenas no modo SQLite local. Não há embeddings nem reranker.
+- PostgreSQL usa busca lexical por tokens em memória; SQLite combina ordem BM25 do FTS5 com cobertura de termos. Embeddings opt-in armazenam vetores em tabela SQL e combinam ranking semântico e lexical; não há reranker baseado em LLM.
 - Quotas e tipos permitidos vêm de variáveis de ambiente globais por instância, não de políticas editáveis por coleção/usuário. A verificação de quotas ainda requer tratamento de concorrência antes de uso com alta escrita simultânea.
 - Exportação inclui memórias e relações, mas não inclui grants, tokens ou histórico de versões. Isso evita transferir credenciais e compartilhamentos implicitamente.
+- Há um cliente Python síncrono para gravação e recuperação de contexto via REST, além de benchmark HTTP com corpus pequeno e métricas Recall@K, MRR e latência. O benchmark ainda não foi executado; seu corpus é uma linha de base inicial, não uma avaliação de qualidade aprovada.
+- Sessões registram apenas metadados; handoffs recebem resumo, decisões, bloqueios e próximos passos enviados explicitamente, sem captura automática de transcrições ou chamadas de ferramenta. O cliente deriva `project_id` do nome da raiz Git ou do diretório atual; o cliente/API precisa de contexto explícito fora desse ambiente.
+- O modo semântico chama um endpoint externo apenas quando `MEMORY_EMBEDDING_URL` está configurada. Novas memórias tentam indexação no momento da gravação e memórias antigas são indexadas sob demanda durante a busca. Falha do provedor deve degradar para busca lexical.
 
 ## Contexto técnico e restrições
 
@@ -95,7 +98,7 @@ Aplicação LLM / operador
 | CLI / distribuição | Typer + pacote Python instalado via `uv` ou `pipx` | Um comando para instalar/inicializar e um entry point `memory`; não exigir Docker no modo local. |
 | Integração agente | MCP Python SDK, além de REST | `stdio` para servidor local; Streamable HTTP para deploy. Separar ferramentas de leitura das operações destrutivas/administrativas. |
 | Empacotamento compartilhado | Docker Compose com API e PostgreSQL | Onboarding de equipe em um comando, dados em volume persistente e configuração por variáveis/arquivo local. |
-| Busca semântica | Fora do núcleo inicial; interface `EmbeddingProvider` futura | Evitar download de modelo e dependência de serviço para a instalação mínima; avaliar tamanho e qualidade antes de adicionar backend vetorial. |
+| Busca semântica | Endpoint OpenAI-compatible opcional e armazenamento vetorial SQL; lexical permanece padrão | Evitar download de modelo e dependência de serviço para a instalação mínima; custo e latência adicionais apenas quando explicitamente configurados. |
 | Testes e qualidade | pytest, Ruff, mypy; testes de contrato para os adaptadores | Cobrir regras do domínio, isolamento de permissões e equivalência de comportamento relevante entre SQLite e PostgreSQL. |
 
 Versões acima são baseline proposta, não pins finais. O lockfile e CI devem fixar versões exatas no início da implementação; atualizar os limites após prova de compatibilidade nos sistemas-alvo. Não há interface gráfica no MVP.
@@ -110,6 +113,9 @@ Entidades principais:
 - `Grant`: escopo/destinatário, papel, validade, revogação e autor da concessão.
 - `Policy`: limites de tamanho/contagem, TTL padrão, categorias permitidas e política de derivados.
 - `ApiToken`: identificador e hash do segredo, owner, escopos, criação e revogação. Token em texto claro só aparece na criação.
+- `AgentSession`: proprietário, identificador externo opcional, workspace/projeto/agente, estado e timestamps; não armazena transcrição.
+- `Handoff`: sessão de origem, escopo, agente de origem/destino, resumo estruturado, estado pendente/reivindicado/concluído e agente que reivindicou.
+- `MemoryEmbedding`: memória, identidade derivada de modelo/endpoint e vetor serializado; sem conteúdo de credencial do endpoint.
 
 Invariantes: toda memória pertence a exatamente um proprietário e escopo; toda derivação tem pelo menos uma fonte ou registra `source_type=manual`; buscas excluem expiradas/deletadas e aplicam autorização antes de ranquear; versão impede atualizações concorrentes silenciosas; exclusão remove dados de todos os índices síncronos.
 
@@ -121,6 +127,7 @@ SQLite deve usar transações, foreign keys e índices explícitos. Acesso local
 
 - `POST /memories`, `GET /memories/{id}`, `PATCH /memories/{id}`, `DELETE /memories/{id}`
 - `POST /search`
+- `POST /sessions`, `POST /sessions/{id}/handoff`, `POST /handoffs/claim-next`, `POST /handoffs/{id}/complete`
 - `POST /compactions/preview`, `POST /compactions/{id}/apply`
 - `POST /memories/{id}/resolve-conflict`, `GET /memories/{id}/history`
 - `POST /grants`, `DELETE /grants/{id}`
@@ -130,7 +137,7 @@ SQLite deve usar transações, foreign keys e índices explícitos. Acesso local
 
 ### MCP
 
-Ferramentas iniciais: `memory_search`, `memory_get`, `memory_create`, `memory_update`, `memory_delete`, `memory_compaction_preview`. Aplicar compactação, compartilhar, importar/exportar e apagar em lote ficam protegidos por ferramentas administrativas explícitas e devem exigir confirmação do operador no cliente ou política equivalente. Em `stdio`, credenciais vêm de configuração local e o processo atende um usuário. Em Streamable HTTP, aplicar auth e autorização iguais às rotas REST.
+Ferramentas incluem `memory_search`, `memory_get`, `memory_create`, `memory_update`, `memory_session_start`, `memory_session_handoff`, `memory_handoff_claim` e `memory_handoff_complete`, além das operações administrativas atuais. Captura de transcrições fica fora desta etapa. Aplicar compactação, compartilhar, importar/exportar e apagar em lote ficam protegidos por ferramentas administrativas explícitas e devem exigir confirmação do operador no cliente ou política equivalente. Em `stdio`, credenciais vêm de configuração local e o processo atende um usuário. Em Streamable HTTP, aplicar auth e autorização iguais às rotas REST.
 
 ### CLI
 
@@ -203,7 +210,7 @@ Não há evidência de testes executados; esta seção define verificações par
 3. Validar CRUD, busca, quotas, histórico, exportação/importação e exclusão de derivados no SQLite.
 4. Validar isolamento de tokens e grants, revogação e ações destrutivas via REST e MCP local.
 5. Validar migrações, Compose, PostgreSQL e uso concorrente no modo compartilhado.
-6. Construir corpus e benchmark; medir latência, Recall@5, custo/footprint e compactação antes de aprovar metas.
+6. Ampliar o corpus de benchmark versionado além do smoke corpus inicial; medir latência, Recall@5, MRR, custo/footprint e compactação antes de aprovar metas.
 7. Completar geração opcional de resumo via provedor configurável e decidir se/como habilitar MCP remoto.
 8. Fazer hardening e documentar backup/restore antes de chamar o serviço pronto para uso compartilhado em produção.
 
@@ -219,7 +226,7 @@ Etapas 2–6 podem avançar sem deploy multiusuário. Etapa 8 depende da interfa
 | Q-004 | Integração inicial? | CLI + REST + MCP | Ordem e superfície de manutenção |
 | Q-005 | Dados sensíveis, residência e criptografia? | Não enviar para fora; TLS no modo remoto; encryption-at-rest pela infraestrutura até decisão de criptografia por aplicação | Modelo de ameaça e garantias de segurança |
 | Q-006 | Usuário inicial? | Desenvolvedor solo e pequenas equipes técnicas | UX, autenticação e suporte |
-| Q-007 | Qualidade de busca? | Recall@5 ≥ 0,8 em corpus de referência; benchmark lexical 10 mil registros | Aceite do retrieval |
+| Q-007 | Qualidade de busca? | Recall@5 ≥ 0,8 em corpus de referência; corpus inicial versionado ainda é pequeno | Aceite do retrieval |
 | Q-008 | Confiança/proveniência? | Rótulos `asserted`, `inferred`, `unverified`; origem opcional tipada | Esquema e ergonomia de ingestão |
 | Q-009 | Histórico e exclusão? | Versionamento enquanto ativo; exclusão propaga para versões/derivados; backups expiram conforme política divulgada | Auditoria e recuperação |
 | Q-010 | Métricas de custo? | Footprint e latência sempre; custo externo só quando provedor usado | Observabilidade e cobrança |

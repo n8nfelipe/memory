@@ -16,15 +16,29 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from llm_memory.config import get_settings
+from llm_memory.continuity import (
+    claim_next_handoff,
+    complete_handoff,
+    create_handoff,
+    create_session,
+    handoff_dict,
+    session_dict,
+)
 from llm_memory.db import SessionLocal, get_session, initialize_database
 from llm_memory.models import CompactionProposal, Grant, Memory, MemoryRelation, MemoryVersion
 from llm_memory.schemas import (
     CompactionPreviewOut,
     CompactionPreviewRequest,
     ConflictResolutionRequest,
+    AgentSessionCreate,
+    AgentSessionOut,
     GrantCreate,
     GrantOut,
     HistoryEntry,
+    HandoffClaimRequest,
+    HandoffCompleteRequest,
+    HandoffCreate,
+    HandoffOut,
     MemoryCreate,
     MemoryCreated,
     MemoryImportRequest,
@@ -179,6 +193,10 @@ def list_memories(
     session: SessionDep,
     owner: PrincipalDep,
     scope_id: str | None = None,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+    agent_id: str | None = None,
+    session_id: str | None = None,
     status: str = "active",
     limit: int = 50,
     offset: int = 0,
@@ -189,6 +207,14 @@ def list_memories(
     stmt = select(Memory).where(Memory.status == status).order_by(Memory.created_at.desc(), Memory.id)
     if scope_id:
         stmt = stmt.where(Memory.scope_id == scope_id)
+    if workspace_id:
+        stmt = stmt.where((Memory.workspace_id.is_(None)) | (Memory.workspace_id == workspace_id))
+    if project_id:
+        stmt = stmt.where((Memory.project_id.is_(None)) | (Memory.project_id == project_id))
+    if agent_id:
+        stmt = stmt.where((Memory.agent_id.is_(None)) | (Memory.agent_id == agent_id))
+    if session_id:
+        stmt = stmt.where((Memory.session_id.is_(None)) | (Memory.session_id == session_id))
     memories = [m for m in session.scalars(stmt).all()
                 if can_read(session, m, owner)
                 and (m.expires_at is None or (m.expires_at.replace(tzinfo=UTC)
@@ -218,9 +244,42 @@ def remove_memory(memory_id: str, session: SessionDep, owner: PrincipalDep) -> R
 
 @app.post("/v1/search", response_model=SearchResponse)
 def search(data: SearchRequest, session: SessionDep, owner: PrincipalDep) -> dict[str, object]:
-    rows = search_memories(session, owner, data.query, data.scope_id, data.limit, data.include_archived)
+    rows = search_memories(
+        session, owner, data.query, data.scope_id, data.limit, data.include_archived,
+        data.workspace_id, data.project_id, data.agent_id, data.session_id,
+    )
     return {"results": [{"memory": memory_dict(memory), "score": round(score, 6), "reason": reason}
                          for memory, score, reason in rows]}
+
+
+@app.post("/v1/sessions", response_model=AgentSessionOut, status_code=201)
+def start_agent_session(data: AgentSessionCreate, session: SessionDep, owner: PrincipalDep) -> dict[str, object]:
+    return session_dict(create_session(session, owner, data))
+
+
+@app.post("/v1/sessions/{session_id}/handoff", response_model=HandoffOut, status_code=201)
+def create_agent_handoff(
+    session_id: str, data: HandoffCreate, session: SessionDep, owner: PrincipalDep
+) -> dict[str, object]:
+    return handoff_dict(create_handoff(session, owner, session_id, data))
+
+
+@app.post("/v1/handoffs/claim-next", response_model=HandoffOut)
+def claim_agent_handoff(
+    data: HandoffClaimRequest, session: SessionDep, owner: PrincipalDep
+) -> dict[str, object]:
+    item = claim_next_handoff(session, owner, data.workspace_id, data.project_id, data.agent_id)
+    return handoff_dict(item)
+
+
+@app.post("/v1/handoffs/{handoff_id}/complete", response_model=HandoffOut)
+def complete_agent_handoff(
+    handoff_id: str,
+    data: HandoffCompleteRequest,
+    session: SessionDep,
+    owner: PrincipalDep,
+) -> dict[str, object]:
+    return handoff_dict(complete_handoff(session, owner, handoff_id, data.agent_id))
 
 
 @app.get("/v1/memories/{memory_id}/history", response_model=list[HistoryEntry])
@@ -317,12 +376,15 @@ def import_memories(data: MemoryImportRequest, session: SessionDep, owner: Princ
         raise HTTPException(status_code=413, detail={"code": "memory_limit_exceeded", "message": "Owner memory count limit reached"})
     if settings.max_bytes_per_owner and current_bytes + incoming_bytes > settings.max_bytes_per_owner:
         raise HTTPException(status_code=413, detail={"code": "memory_limit_exceeded", "message": "Owner memory size limit reached"})
+    from llm_memory.embeddings import store_embedding
     from llm_memory.service import _index_memory
 
     for item in data.memories:
         scope_id = f"private:{owner}" if item.scope_id.startswith("private:") else item.scope_id
         memory = Memory(
             id=item.id, owner_id=owner, scope_id=scope_id, content=item.content,
+            workspace_id=item.workspace_id, project_id=item.project_id,
+            agent_id=item.agent_id, session_id=item.session_id,
             kind=item.kind, source_type=item.source.type, source_ref=item.source.ref,
             confidence=item.confidence, tags=json.dumps(item.tags, ensure_ascii=False),
             status=item.status, expires_at=item.expires_at, created_at=item.created_at,
@@ -331,6 +393,7 @@ def import_memories(data: MemoryImportRequest, session: SessionDep, owner: Princ
         session.add(memory)
         session.flush()
         _index_memory(session, memory)
+        store_embedding(session, memory, get_settings())
     relation_count = 0
     seen_relations: set[tuple[str, str, str]] = set()
     for relation in data.relations:

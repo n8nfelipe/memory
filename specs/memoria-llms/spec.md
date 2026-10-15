@@ -1,7 +1,7 @@
 # Especificação — Memória controlável para LLMs
 
 - Estado: rascunho
-- Versão/data: 0.3 — 2026-10-15
+- Versão/data: 0.4 — 2026-10-15
 - Fontes: pedido do usuário: “vamos planejar uma memoria para llms e de facil instalação, que controle bem as memoria, compacta, pode ser compartilhada”
 - Aceite: pendente; nenhuma decisão de produto foi confirmada além dos atributos do pedido
 
@@ -41,6 +41,11 @@ Aplicações com LLMs precisam guardar contexto útil entre interações sem acu
 | RF-011 | Permitir definir categorias de dados permitidas e políticas de proteção; restringir cada operação ao proprietário e às permissões concedidas. | Alta | Recomendação do assistente |
 | RF-012 | Permitir inspecionar por que uma memória foi recuperada, corrigir o registro e consultar seu histórico de alterações. | Alta | Recomendação do assistente |
 | RF-013 | Expor métricas de uso, incluindo espaço ocupado e, quando aplicável, latência e custo de operações de busca e compactação. | Média | Recomendação do assistente |
+| RF-014 | Registrar sessões de agentes por proprietário, workspace, projeto e agente; permitir criar handoff estruturado com resumo, decisões, bloqueios e próximos passos. | Alta | Recomendação aceita pelo pedido “siga a recomendação” |
+| RF-015 | Permitir que um agente reivindique um handoff pendente uma única vez, sem expor handoffs de outro proprietário ou projeto. | Alta | Recomendação aceita pelo pedido “siga a recomendação” |
+| RF-016 | Aplicar escopo opcional de workspace/projeto/agente/sessão a memórias e buscas, com resolução automática do projeto no cliente local e compatibilidade com clientes antigos. | Alta | Recomendação aceita pelo pedido “siga a recomendação” |
+| RF-017 | Oferecer embeddings opcionais via endpoint compatível com OpenAI, combinando ranking semântico e lexical; sem configuração, não enviar conteúdo a provedores. | Alta | Recomendação aceita pelo pedido “siga a recomendação” |
+| RF-018 | Avaliar recuperação em corpus maior versionado e reportar Recall@K, MRR e latência. | Alta | Recomendação aceita pelo pedido “siga a recomendação” |
 
 ## Dados, estados e interfaces
 
@@ -62,6 +67,9 @@ Estados propostos: `active`, `archived`, `conflict` e `deleted`. Compactação c
 - API REST versionada em `/v1`; operações conceituais: criar/listar/obter/atualizar/apagar memória, buscar, pré-visualizar/aplicar compactação, revisar conflitos, consultar histórico, compartilhar/revogar e importar/exportar.
 - MCP: ferramentas para `memory_search`, `memory_get`, `memory_create` e operações administrativas separadas, com confirmação explícita para apagar, compartilhar ou aplicar compactação.
 - CLI para inicializar, servir, inspecionar, exportar/importar e administrar políticas.
+- REST/MCP/cliente Python para iniciar e encerrar sessões, criar handoffs e reivindicar o próximo handoff por projeto. Sessões não capturam transcrições automaticamente; somente os campos estruturados enviados pelo cliente são armazenados.
+- Cliente local resolve projeto pelo repositório Git ou diretório atual; API aceita escopo explícito para clientes remotos. Memórias de projeto ficam visíveis a agentes do mesmo projeto, memórias de agente ficam visíveis a esse agente, e memórias de sessão ficam visíveis apenas à sessão correspondente, além das memórias compartilhadas de níveis superiores.
+- Embeddings são opt-in via endpoint OpenAI-compatible configurado pelo operador. A recuperação combina rankings vetorial e lexical; se não houver configuração, ou o provedor falhar, a busca lexical continua disponível.
 - Busca retorna itens com pontuação relativa, motivo resumido, proveniência, confiança e permissões/escopo já aplicados. A pontuação não é apresentada como probabilidade.
 - Erros distinguem entrada inválida, falta de autenticação, falta de permissão, recurso inexistente, conflito de versão e limite excedido. O contrato REST usa códigos HTTP coerentes (`400/401/403/404/409/413/422`) e corpo JSON estável com `code`, `message` e `request_id`.
 
@@ -124,6 +132,24 @@ MVP: armazenamento local, CLI, API REST e servidor MCP local; ciclo de vida da m
 - Dada uma memória expirada ou apagada, quando a política de retenção é aplicada, então a memória e suas derivações recebem o tratamento configurado e o resultado pode ser verificado.
 - Dado o uso do sistema, quando o proprietário consulta as métricas, então vê espaço ocupado e as métricas de operação disponíveis para o modo instalado.
 
+### CA-009 — Continuidade entre sessões — RF-014, RF-015
+
+- Dada uma sessão ativa, quando o agente cria um handoff com resumo e próximos passos, então a sessão é encerrada e o handoff fica pendente no mesmo proprietário e projeto.
+- Dado um handoff pendente, quando dois agentes tentam reivindicá-lo simultaneamente, então exatamente um recebe o handoff e a outra chamada não o recebe.
+- Dada uma chamada de listagem/reivindicação em outro proprietário ou projeto, então nenhum handoff fora do escopo é retornado.
+
+### CA-010 — Escopo contextual — RF-016
+
+- Dado um cliente Python local dentro de um repositório, quando grava ou busca sem informar projeto, então usa o projeto resolvido a partir do repositório; fora de um repositório usa o diretório atual.
+- Dada uma busca com projeto, agente e sessão, então resultados incluem memórias globais/de projeto aplicáveis e excluem memórias de outros agentes/sessões.
+- Clientes antigos sem dimensões de contexto continuam usando o comportamento atual de `scope_id`.
+
+### CA-011 — Recuperação semântica opcional — RF-017, RF-018
+
+- Dado um endpoint de embeddings configurado, quando o cliente grava e busca, então resultados combinam ranking lexical e semântico e retornam motivo explicável.
+- Sem endpoint configurado, nenhuma chamada externa é feita e a busca lexical permanece disponível.
+- Dado o corpus de avaliação versionado, quando o benchmark é executado, então informa Recall@K, MRR e latência para cada configuração de busca.
+
 ## Rastreabilidade e verificação
 
 | Requisito | Critérios de aceite | Verificação prevista | Evidência observada |
@@ -136,6 +162,9 @@ MVP: armazenamento local, CLI, API REST e servidor MCP local; ciclo de vida da m
 | RF-008, RF-009, RF-012 | CA-006 | Testes de proveniência, explicação de busca, correção e histórico | Testes de proveniência/busca escritos; execução não realizada |
 | RF-010 | CA-007 | Testes de duplicatas, contradições e resolução | Avisos heurísticos e decisão manual implementados; cobertura semântica não verificada |
 | RF-003, RF-011, RF-013 | CA-008 | Testes de políticas de dados/expiração e inspeção de métricas | TTL, quotas e métricas básicas; testes de expiração escritos, execução não realizada |
+| RF-014, RF-015 | CA-009 | Concorrência de claim, isolamento por proprietário/projeto e transição de sessão | Rotas REST, ferramentas MCP e cliente implementados; verificação não executada |
+| RF-016 | CA-010 | Cliente local em repositório, subdiretório, worktree e fora de Git; isolamento agente/sessão | Escopo resolvido no cliente/MCP e aplicado em gravação, listagem e busca; verificação não executada |
+| RF-017, RF-018 | CA-011 | Teste com endpoint fake e execução comparativa do corpus de benchmark | Provedor opt-in, fusão vetorial/lexical e corpus v1 com 30 pares implementados; verificação não executada |
 
 ## Hipóteses, dúvidas e riscos
 
@@ -160,3 +189,4 @@ MVP: armazenamento local, CLI, API REST e servidor MCP local; ciclo de vida da m
 | 2026-10-15 | RF-002–RF-013, RNF-005–RNF-007, CA-006–CA-008, Q-007–Q-010 | Acrescentadas recomendações sobre recuperação, proveniência, conflitos, privacidade, retenção, portabilidade e métricas | Pedido do usuário para adicionar as recomendações |
 | 2026-10-15 | Contratos, estados, permissões, escopo do MVP, RNF-001–RNF-007 | Definidos modelo de dados, interfaces e metas iniciais para viabilizar decisão de arquitetura | Pedido do usuário para revisar e completar o plano |
 | 2026-10-15 | Todos | Implementação inicial em Python criada; evidências de execução e aceite permanecem pendentes | Pedido do usuário para implementar |
+| 2026-10-15 | RF-014–RF-018, CA-009–CA-011 | Incluídos sessões/handoffs, escopo contextual, embeddings opcionais e avaliação de recuperação; sem captura bruta de transcrições por padrão | Pedido do usuário “siga a recomendação”; defaults de privacidade registrados durante implementação |

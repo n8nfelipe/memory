@@ -17,6 +17,10 @@ class MemoryCreate(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
     kind: str = Field(default="fact", min_length=1, max_length=60)
     scope_id: str | None = Field(default=None, max_length=200)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=200)
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+    agent_id: str | None = Field(default=None, min_length=1, max_length=200)
+    session_id: str | None = Field(default=None, min_length=1, max_length=36)
     source: SourceInput = Field(default_factory=SourceInput)
     confidence: Confidence = "unverified"
     tags: list[str] = Field(default_factory=list, max_length=30)
@@ -55,6 +59,10 @@ class MemoryPatch(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2_000)
     scope_id: str | None = Field(default=None, max_length=200)
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=200)
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+    agent_id: str | None = Field(default=None, min_length=1, max_length=200)
+    session_id: str | None = Field(default=None, min_length=1, max_length=36)
     limit: int = Field(default=5, ge=1, le=50)
     include_archived: bool = False
 
@@ -78,6 +86,10 @@ class ConflictResolutionRequest(BaseModel):
 class MemoryImportItem(BaseModel):
     id: str = Field(min_length=1, max_length=36)
     scope_id: str = Field(min_length=1, max_length=200)
+    workspace_id: str | None = Field(default=None, max_length=200)
+    project_id: str | None = Field(default=None, max_length=200)
+    agent_id: str | None = Field(default=None, max_length=200)
+    session_id: str | None = Field(default=None, max_length=36)
     content: str = Field(min_length=1, max_length=100_000)
     kind: str = Field(default="fact", min_length=1, max_length=60)
     source: SourceInput = Field(default_factory=SourceInput)
@@ -100,6 +112,10 @@ class MemoryOut(BaseModel):
     id: str
     owner_id: str
     scope_id: str
+    workspace_id: str | None = None
+    project_id: str | None = None
+    agent_id: str | None = None
+    session_id: str | None = None
     content: str
     kind: str
     source: SourceInput
@@ -157,3 +173,70 @@ class ErrorBody(BaseModel):
     code: str
     message: str
     request_id: str
+
+
+class AgentSessionCreate(BaseModel):
+    external_id: str | None = Field(default=None, min_length=1, max_length=200)
+    workspace_id: str = Field(default="default", min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    agent_id: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=300)
+
+
+class AgentSessionOut(BaseModel):
+    id: str
+    external_id: str | None
+    owner_id: str
+    workspace_id: str
+    project_id: str
+    agent_id: str
+    title: str
+    status: str
+    started_at: datetime
+    updated_at: datetime
+    ended_at: datetime | None
+
+
+class HandoffCreate(BaseModel):
+    summary: str = Field(min_length=1, max_length=100_000)
+    decisions: list[str] = Field(default_factory=list, max_length=100)
+    blockers: list[str] = Field(default_factory=list, max_length=100)
+    next_steps: list[str] = Field(default_factory=list, max_length=100)
+    to_agent: str | None = Field(default=None, max_length=200)
+
+    @field_validator("summary")
+    @classmethod
+    def trim_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("summary cannot be blank")
+        return value
+
+
+class HandoffClaimRequest(BaseModel):
+    workspace_id: str = Field(default="default", min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    agent_id: str = Field(min_length=1, max_length=200)
+
+
+class HandoffCompleteRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=200)
+
+
+class HandoffOut(BaseModel):
+    id: str
+    session_id: str
+    owner_id: str
+    workspace_id: str
+    project_id: str
+    from_agent: str
+    to_agent: str | None
+    summary: str
+    decisions: list[str]
+    blockers: list[str]
+    next_steps: list[str]
+    status: str
+    claimed_by_agent: str | None
+    claimed_at: datetime | None
+    created_at: datetime
+    completed_at: datetime | None
