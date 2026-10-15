@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from llm_memory.config import get_settings
 from llm_memory.db import SessionLocal, get_session, initialize_database
-from llm_memory.models import Grant, Memory, MemoryRelation, MemoryVersion
+from llm_memory.models import CompactionProposal, Grant, Memory, MemoryRelation, MemoryVersion
 from llm_memory.schemas import (
     CompactionPreviewOut,
     CompactionPreviewRequest,
@@ -137,6 +137,35 @@ PrincipalDep = Annotated[str, Depends(get_principal)]
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/metrics")
+def metrics(session: SessionDep, owner: PrincipalDep) -> dict[str, object]:
+    """Return usage metrics for the caller (counts and bytes, no memory contents)."""
+    owned = session.scalars(select(Memory).where(Memory.owner_id == owner)).all()
+    by_status: dict[str, int] = {"active": 0, "archived": 0, "conflict": 0, "deleted": 0}
+    total_bytes = 0
+    for memory in owned:
+        by_status[memory.status] = by_status.get(memory.status, 0) + 1
+        total_bytes += len(memory.content.encode("utf-8"))
+    grants = session.scalar(
+        select(func.count())
+        .select_from(Grant)
+        .where(Grant.owner_id == owner, Grant.revoked.is_(False))
+    ) or 0
+    pending = session.scalar(
+        select(func.count())
+        .select_from(CompactionProposal)
+        .where(CompactionProposal.owner_id == owner, CompactionProposal.status == "pending")
+    ) or 0
+    return {
+        "owner_id": owner,
+        "total_memories": len(owned),
+        "total_bytes": total_bytes,
+        "by_status": by_status,
+        "active_grants": grants,
+        "pending_compactions": pending,
+    }
 
 
 @app.post("/v1/memories", response_model=MemoryCreated, status_code=201)

@@ -30,6 +30,8 @@ curl -X POST http://127.0.0.1:8765/v1/search \
 
 Configure o host MCP para iniciar `memory mcp`. O servidor usa `stdio` e aponta para o mesmo banco local da API e da CLI.
 
+Ferramentas de leitura: `memory_search`, `memory_get`, `memory_history`, `memory_compaction_preview`. Escrita: `memory_create`, `memory_update`. Administrativas (exigem `confirm=true`): `memory_delete`, `memory_compaction_apply`, `memory_share`, `memory_resolve_conflict`.
+
 ## Uso compartilhado
 
 Copie `.env.shared.example` para `.env`, defina uma senha aleatória com letras, números, `_` e `-`, e inicie:
@@ -44,6 +46,12 @@ O token é mostrado uma única vez. A porta do exemplo fica restrita ao próprio
 ## Exportação e importação
 
 `GET /v1/export` exporta as memórias próprias e suas relações em JSON `schema_version: "1"`. `POST /v1/import` importa o arquivo, preserva IDs e relações, remapeia escopos privados para o proprietário atual e recusa IDs já existentes. Grants e tokens não são exportados.
+
+CLI equivalente (dono local): `memory export --output backup.json`, `memory import --input backup.json`, `memory policy`, `memory compact-preview --memory-id ID --memory-id ID --content "..."`, `memory compact-apply --proposal-id ID`.
+
+## Métricas
+
+`GET /v1/metrics` retorna contagens por status, bytes totais, grants ativos e compactações pendentes, sem expor conteúdo.
 
 ## Configuração
 
