@@ -1,0 +1,178 @@
+name: CI/CD
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Stable SemVer to release, for example 0.2.0. Leave empty to run CI only."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install project and development dependencies
+        run: uv sync --extra dev --extra shared
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Check types
+        run: uv run mypy src/llm_memory
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov=llm_memory --cov-report=term-missing --cov-report=xml
+
+      - name: Audit dependencies for known vulnerabilities
+        run: uv run pip-audit
+
+      - name: Build Python distributions
+        if: matrix.python-version == '3.13'
+        run: uv build
+
+  prepare-release:
+    name: Set version and create SemVer tag
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.release_version != '' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Ensure the tag is unused
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${RELEASE_VERSION} already exists" >&2
+            exit 1
+          fi
+
+      - name: Validate version and update pyproject.toml
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          version = os.environ["RELEASE_VERSION"]
+          if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
+              raise SystemExit("Use stable SemVer MAJOR.MINOR.PATCH without a leading v or leading zeroes")
+
+          project_file = Path("pyproject.toml")
+          content = project_file.read_text()
+          current = tomllib.loads(content)["project"]["version"]
+          if tuple(map(int, version.split("."))) <= tuple(map(int, current.split("."))):
+              raise SystemExit(f"New version {version} must be greater than current version {current}")
+
+          pattern = re.compile(r'(?m)^(version\s*=\s*)"[^"]+"$')
+          updated, replacements = pattern.subn(r'\g<1>"' + version + '"', content, count=1)
+          if replacements != 1:
+              raise SystemExit("Could not find [project].version in pyproject.toml")
+          project_file.write_text(updated)
+          PY
+
+      - name: Commit version and push SemVer tag
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(release): v${RELEASE_VERSION}"
+          git tag -a "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
+          git push origin "HEAD:${GITHUB_REF}" "refs/tags/v${RELEASE_VERSION}"
+
+      - name: Build Python distributions
+        run: uv build
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: gh release create "v${RELEASE_VERSION}" dist/* --title "v${RELEASE_VERSION}" --generate-notes
+
+  publish-release:
+    name: Build and publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate SemVer tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(r"v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))", tag)
+          if not match:
+              raise SystemExit("Release tag must use vMAJOR.MINOR.PATCH SemVer format")
+          package_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if match.group(1) != package_version:
+              raise SystemExit(f"Tag version {match.group(1)} does not match package version {package_version}")
+          PY
+
+      - name: Build Python distributions
+        run: uv build
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+          fi

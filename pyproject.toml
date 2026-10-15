@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-memory"
+version = "0.1.0"
+description = "Local-first, inspectable memory service for LLM applications"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = [
+  "alembic>=1.15,<2",
+  "fastapi>=0.115,<1",
+  "mcp>=2,<3",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
+  "typer>=0.15,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+shared = ["psycopg[binary]>=3.2,<4"]
+dev = [
+  "mypy>=1.15,<2",
+  "pip-audit>=2.8,<3",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+memory = "llm_memory.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_memory"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true

@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: memory
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - memory_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory -d memory"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  memory:
+    build: .
+    environment:
+      MEMORY_DATABASE_URL: postgresql+psycopg://memory:${POSTGRES_PASSWORD}@db:5432/memory
+      MEMORY_AUTH_REQUIRED: "true"
+      MEMORY_HOST: 0.0.0.0
+      MEMORY_PORT: 8765
+      MEMORY_MAX_ENTRIES_PER_OWNER: ${MEMORY_MAX_ENTRIES_PER_OWNER:-0}
+      MEMORY_MAX_BYTES_PER_OWNER: ${MEMORY_MAX_BYTES_PER_OWNER:-0}
+      MEMORY_DEFAULT_TTL_DAYS: ${MEMORY_DEFAULT_TTL_DAYS:-}
+      MEMORY_ALLOWED_KINDS: ${MEMORY_ALLOWED_KINDS:-}
+    ports:
+      - "127.0.0.1:8765:8765"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  memory_pgdata:
