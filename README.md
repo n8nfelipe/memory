@@ -76,8 +76,6 @@ uv run pytest
 
 ## CI/CD no GitHub
 
-O GitHub Actions roda Ruff, mypy, testes com relatório de cobertura, auditoria de vulnerabilidades das dependências e build dos pacotes em pushes, pull requests e execuções manuais, usando Python 3.13 e 3.14. Depois de um push aprovado à branch padrão, cria a tag `vMAJOR.MINOR.PATCH` definida em `pyproject.toml` se ela ainda não existir. Para uma nova tag, incremente a versão do pacote; pushes posteriores com a mesma versão não criam tags repetidas.
-
-Também é possível criar uma release SemVer estável manualmente: abra **Actions → CI/CD → Run workflow** na branch padrão e informe `release_version` como `MAJOR.MINOR.PATCH`, por exemplo `0.2.0`. O workflow exige que a versão seja maior que a atual, atualiza `pyproject.toml`, cria o commit e a tag, e publica wheel e sdist no GitHub Release. Tags `vMAJOR.MINOR.PATCH` enviadas manualmente também podem publicar uma release, desde que coincidam com a versão em `pyproject.toml`.
+O GitHub Actions roda Ruff, mypy, testes com relatório de cobertura, auditoria de vulnerabilidades das dependências e build dos pacotes em pushes, pull requests e execuções manuais, usando Python 3.13 e 3.14. Após cada push aprovado à branch padrão, gera automaticamente a próxima tag `vMAJOR.MINOR.PATCH`, incrementando o patch da última tag existente (ou começando em `v0.1.0`), e cria um GitHub Release com os pacotes e notas geradas. A versão da tag vem do histórico de tags Git, sem ler ou atualizar um arquivo de versão. Tags SemVer enviadas manualmente também podem publicar uma release.
 
 O workflow requer permissão `contents: write` para criar commit/tag/release. A cobertura é reportada nos logs sem limite mínimo até estabelecermos uma linha de base. A publicação em PyPI não está configurada.

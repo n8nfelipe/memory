@@ -4,11 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      release_version:
-        description: "Stable SemVer to release, for example 0.2.0. Leave empty to run CI only."
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -54,8 +49,8 @@ jobs:
         if: matrix.python-version == '3.13'
         run: uv build
 
-  tag-package-version:
-    name: Tag package version
+  tag-release:
+    name: Generate release tag
     if: >-
       github.event_name == 'push' &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -64,98 +59,42 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out source
+      - name: Check out source and tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Resolve package version
-        id: version
+      - name: Generate next SemVer tag
+        id: tag
         run: |
-          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Package version must use stable MAJOR.MINOR.PATCH SemVer: $VERSION" >&2
+          LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)"
+          if [[ -z "$LATEST_TAG" ]]; then
+            VERSION="0.1.0"
+          elif [[ "$LATEST_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          else
+            echo "Latest tag is not stable SemVer: ${LATEST_TAG}" >&2
             exit 1
           fi
-          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "value=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag if the package version is new
+      - name: Create and push generated tag
         env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
         run: |
-          TAG="v${PACKAGE_VERSION}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists; no new version tag is needed."
-            exit 0
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists; refusing to overwrite it." >&2
+            exit 1
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
-          git push origin "refs/tags/${TAG}"
-
-  prepare-release:
-    name: Set version and create SemVer tag
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.release_version != '' &&
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    needs: quality
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          git tag -a "$RELEASE_TAG" "$GITHUB_SHA" -m "Release $RELEASE_TAG"
+          git push origin "refs/tags/${RELEASE_TAG}"
 
       - name: Install uv and Python
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.13"
-
-      - name: Ensure the tag is unused
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/v${RELEASE_VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${RELEASE_VERSION} already exists" >&2
-            exit 1
-          fi
-
-      - name: Validate version and update pyproject.toml
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: |
-          python - <<'PY'
-          import os
-          import re
-          import tomllib
-          from pathlib import Path
-
-          version = os.environ["RELEASE_VERSION"]
-          if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
-              raise SystemExit("Use stable SemVer MAJOR.MINOR.PATCH without a leading v or leading zeroes")
-
-          project_file = Path("pyproject.toml")
-          content = project_file.read_text()
-          current = tomllib.loads(content)["project"]["version"]
-          if tuple(map(int, version.split("."))) <= tuple(map(int, current.split("."))):
-              raise SystemExit(f"New version {version} must be greater than current version {current}")
-
-          pattern = re.compile(r'(?m)^(version\s*=\s*)"[^"]+"$')
-          updated, replacements = pattern.subn(r'\g<1>"' + version + '"', content, count=1)
-          if replacements != 1:
-              raise SystemExit("Could not find [project].version in pyproject.toml")
-          project_file.write_text(updated)
-          PY
-
-      - name: Commit version and push SemVer tag
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml
-          git commit -m "chore(release): v${RELEASE_VERSION}"
-          git tag -a "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
-          git push origin "HEAD:${GITHUB_REF}" "refs/tags/v${RELEASE_VERSION}"
 
       - name: Build Python distributions
         run: uv build
@@ -163,8 +102,8 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
-        run: gh release create "v${RELEASE_VERSION}" dist/* --title "v${RELEASE_VERSION}" --generate-notes
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
+        run: gh release create "$RELEASE_TAG" dist/* --title "$RELEASE_TAG" --generate-notes
 
   publish-release:
     name: Build and publish GitHub Release
@@ -182,24 +121,14 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Validate SemVer tag matches package version
+      - name: Validate SemVer tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python - <<'PY'
-          import os
-          import re
-          import tomllib
-          from pathlib import Path
-
-          tag = os.environ["RELEASE_TAG"]
-          match = re.fullmatch(r"v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))", tag)
-          if not match:
-              raise SystemExit("Release tag must use vMAJOR.MINOR.PATCH SemVer format")
-          package_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          if match.group(1) != package_version:
-              raise SystemExit(f"Tag version {match.group(1)} does not match package version {package_version}")
-          PY
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must use vMAJOR.MINOR.PATCH SemVer format" >&2
+            exit 1
+          fi
 
       - name: Build Python distributions
         run: uv build
