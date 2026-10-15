@@ -24,7 +24,7 @@ shared = ["psycopg[binary]>=3.2,<4"]
 dev = [
   "mypy>=1.15,<2",
   "pip-audit>=2.8,<3",
-  "pytest>=8.3,<9",
+  "pytest>=9.0.3,<10",
   "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
 ]
