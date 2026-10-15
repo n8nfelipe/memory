@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from llm_memory.models import AgentSession, Handoff, utcnow
@@ -89,11 +91,11 @@ def create_handoff(
     if agent_session.status != "active":
         raise HTTPException(status_code=409, detail={"code": "session_closed", "message": "Session is already closed"})
     now = utcnow()
-    claimed = session.execute(
+    claimed = cast(CursorResult[Any], session.execute(
         update(AgentSession)
         .where(AgentSession.id == agent_session.id, AgentSession.status == "active")
         .values(status="handed_off", updated_at=now, ended_at=now)
-    )
+    ))
     if claimed.rowcount != 1:
         session.rollback()
         raise HTTPException(status_code=409, detail={"code": "session_closed", "message": "Session is already closed"})
@@ -132,11 +134,11 @@ def claim_next_handoff(
                 "code": "no_pending_handoff", "message": "No pending handoff for this project"
             })
         now = utcnow()
-        result = session.execute(
+        result = cast(CursorResult[Any], session.execute(
             update(Handoff)
             .where(Handoff.id == candidate.id, Handoff.status == "pending")
             .values(status="claimed", claimed_by_agent=agent_id, claimed_at=now)
-        )
+        ))
         session.commit()
         if result.rowcount == 1:
             session.refresh(candidate)
@@ -154,11 +156,11 @@ def complete_handoff(session: Session, owner_id: str, handoff_id: str, agent_id:
         raise HTTPException(status_code=409, detail={
             "code": "handoff_not_claimed", "message": "Handoff must be claimed by this agent first"
         })
-    result = session.execute(
+    result = cast(CursorResult[Any], session.execute(
         update(Handoff)
         .where(Handoff.id == handoff_id, Handoff.status == "claimed", Handoff.claimed_by_agent == agent_id)
         .values(status="completed", completed_at=utcnow())
-    )
+    ))
     session.commit()
     if result.rowcount != 1:
         raise HTTPException(status_code=409, detail={"code": "handoff_state_changed", "message": "Handoff state changed"})

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -86,7 +86,7 @@ class MemoryClient:
             payload["agent_id"] = self.agent_id
         if self.session_id is not None:
             payload["session_id"] = self.session_id
-        return self._request("POST", "/v1/memories", payload)
+        return cast(dict[str, Any], self._request("POST", "/v1/memories", payload))
 
     def search(
         self,
@@ -110,8 +110,8 @@ class MemoryClient:
             payload["agent_id"] = self.agent_id
         if self.session_id is not None:
             payload["session_id"] = self.session_id
-        result = self._request("POST", "/v1/search", payload)
-        return result["results"]
+        result = cast(dict[str, Any], self._request("POST", "/v1/search", payload))
+        return cast(list[dict[str, Any]], result["results"])
 
     def start_session(
         self,
@@ -129,7 +129,7 @@ class MemoryClient:
         }
         if external_id is not None:
             payload["external_id"] = external_id
-        result = self._request("POST", "/v1/sessions", payload)
+        result = cast(dict[str, Any], self._request("POST", "/v1/sessions", payload))
         self.agent_id = agent_id
         self.session_id = result["id"]
         return result
@@ -153,7 +153,10 @@ class MemoryClient:
             "next_steps": next_steps or [],
             "to_agent": to_agent,
         }
-        result = self._request("POST", f"/v1/sessions/{self.session_id}/handoff", payload)
+        result = cast(
+            dict[str, Any],
+            self._request("POST", f"/v1/sessions/{self.session_id}/handoff", payload),
+        )
         self.session_id = None
         return result
 
@@ -161,21 +164,27 @@ class MemoryClient:
         """Atomically claim the oldest pending handoff in this project."""
         if self.agent_id is None:
             raise MemoryClientError("Set agent_id or start a session before claiming a handoff")
-        return self._request("POST", "/v1/handoffs/claim-next", {
-            "workspace_id": self.workspace_id,
-            "project_id": self.project_id,
-            "agent_id": self.agent_id,
-        })
+        return cast(
+            dict[str, Any],
+            self._request("POST", "/v1/handoffs/claim-next", {
+                "workspace_id": self.workspace_id,
+                "project_id": self.project_id,
+                "agent_id": self.agent_id,
+            }),
+        )
 
     def complete_handoff(self, handoff_id: str) -> dict[str, Any]:
         """Mark a handoff complete when it was claimed by this agent."""
         if self.agent_id is None:
             raise MemoryClientError("Set agent_id or start a session before completing a handoff")
-        return self._request("POST", f"/v1/handoffs/{handoff_id}/complete", {
-            "workspace_id": self.workspace_id,
-            "project_id": self.project_id,
-            "agent_id": self.agent_id,
-        })
+        return cast(
+            dict[str, Any],
+            self._request("POST", f"/v1/handoffs/{handoff_id}/complete", {
+                "workspace_id": self.workspace_id,
+                "project_id": self.project_id,
+                "agent_id": self.agent_id,
+            }),
+        )
 
     def context(
         self,

@@ -87,8 +87,8 @@ def ensure_embeddings(
     try:
         for start in range(0, len(missing), 64):
             batch = missing[start : start + 64]
-            vectors = embed_texts([memory.content for memory in batch], settings)
-            for memory, vector in zip(batch, vectors, strict=True):
+            batch_vectors = embed_texts([memory.content for memory in batch], settings)
+            for memory, vector in zip(batch, batch_vectors, strict=True):
                 record = existing.get(memory.id)
                 if record is None:
                     record = MemoryEmbedding(memory_id=memory.id, model=provider_key(settings), vector="[]")
