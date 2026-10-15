@@ -1,10 +1,10 @@
 # LLM Memory
 
-Serviço local-first para guardar, buscar, revisar, compactar e compartilhar memórias usadas por aplicações com LLMs. O modo local usa SQLite; o modo compartilhado pode usar PostgreSQL.
+Serviço local-first para guardar, buscar, revisar, compactar e compartilhar memórias usadas por aplicações com LLMs. O modo local usa um repositório Git com **um arquivo Markdown por sessão**, sem banco nem índice persistente. O backend legado SQLite/PostgreSQL continua disponível para migração e uso compartilhado.
 
 ## Instalação para desenvolvimento
 
-Requer Python 3.13 ou superior.
+Requer Python 3.13 ou superior, Git e Linux/macOS (bloqueio local via `flock`).
 
 ```sh
 uv tool install .
@@ -13,6 +13,89 @@ memory serve
 ```
 
 A API local escuta `127.0.0.1:8765`. A documentação OpenAPI fica em `/docs`.
+
+## Repositório de sessões configurável
+
+Neste projeto, `memory.toml` seleciona Markdown e aponta para `data/sessao-memory`.
+Esse diretório é um clone separado, ignorado pelo Git da aplicação. O remoto escolhido
+fica no `origin` do clone; nenhuma URL é fixa no código.
+
+```toml
+[storage]
+backend = "markdown"
+repository = "data/sessao-memory"
+```
+
+O caminho relativo é resolvido a partir de `memory.toml`. Para executar de outro
+ diretório, use `MEMORY_CONFIG=/caminho/absoluto/memory.toml`. Variáveis de ambiente
+ têm precedência:
+
+```sh
+export MEMORY_STORAGE_BACKEND=markdown
+export MEMORY_REPOSITORY=/caminho/para/sessao-memory
+# Para um destino ainda vazio:
+memory init --remote git@github.com:n8nfelipe/sessao-memory.git
+# Para um clone existente ou um repositório local novo:
+memory init
+```
+
+Sem configuração, o destino é `~/.llm-memory/sessions`. Uma URL de banco explicitada
+por `MEMORY_DATABASE_URL` seleciona o backend legado apenas quando não há seleção
+explícita em `memory.toml` ou `MEMORY_STORAGE_BACKEND`. Arquivos `.env` são modelos;
+a CLI não os carrega automaticamente.
+
+```text
+sessao-memory/
+└── sessions/
+    ├── <uuid-da-sessao-a>.md
+    └── <uuid-da-sessao-b>.md
+```
+
+`memory_session_start` define a sessão atual da conexão MCP. Passe `session_id`
+explicitamente ao intercalar agentes. Chamadas sem sessão criam uma sessão implícita;
+na API HTTP, reutilize o ID retornado para agrupar as gravações. Correções, exclusões,
+compactações e reivindicações de handoff são eventos no arquivo da sessão que escreve;
+o arquivo de uma sessão encerrada não é reaberto. Os metadados ficam em comentários
+HTML e os textos ficam em Markdown legível. Preserve os marcadores ao editar arquivos.
+
+A busca lexical lê as sessões e seus metadados, com filtros de projeto e workspace.
+Embeddings, tokens e grants por usuário continuam exclusivos do backend de banco.
+O modo Markdown é local: todos que leem o repositório conseguem ler as sessões.
+A exclusão e a expiração ocultam registros da busca, mas **não apagam o conteúdo dos
+arquivos nem do histórico Git**. `purge-expired` registra essas exclusões lógicas.
+
+Gravações usam substituição atômica e um bloqueio no diretório Git. O bloqueio coordena
+processos no mesmo checkout; não coordena clones em máquinas diferentes. Revisões
+concorrentes da mesma memória e claims concorrentes de handoffs são detectados ao
+reler os arquivos e exigem revisão do merge. Não execute pull/merge enquanto houver
+agentes escrevendo. Evite compartilhar a escrita de uma mesma sessão entre agentes.
+
+Commits e push são explícitos. O comando abaixo inclui somente o arquivo indicado,
+sem levar alterações de outras sessões ou arquivos já staged:
+
+```sh
+memory commit --session-id UUID --message "Concluir sessão"
+git -C /caminho/para/sessao-memory push origin HEAD
+```
+
+Configure a identidade Git normalmente antes do primeiro commit. A aplicação não
+faz push, pull ou commits automáticos.
+
+### Migrar o banco existente
+
+```sh
+memory migrate-database --database-url sqlite:////caminho/absoluto/memory.db
+memory inspect
+```
+
+A migração lê o banco sem alterá-lo e preserva IDs, sessões, memórias, versões,
+relações, propostas de compactação e handoffs do proprietário local. Registros antigos
+sem sessão recebem um arquivo de sessão legado. Tokens, grants e embeddings não são
+copiados. Reexecutar a migração não duplica arquivos; sessões já alteradas no destino
+são recusadas. Mantenha os escritores do banco parados durante a migração. O comando
+não publica os dados no remoto. O JSON de `memory export` continua disponível; importar
+esse JSON cria um diário de importação, enquanto `migrate-database` preserva a divisão
+original em sessões.
 
 ## Uso rápido
 
@@ -52,19 +135,31 @@ handoff = memory.create_handoff(
 )
 ```
 
-O cliente resolve automaticamente o nome do projeto pelo repositório Git atual (ou pelo diretório atual fora de um repositório). `start_session` cria uma sessão; `create_handoff` a encerra e guarda resumo, decisões, bloqueios e próximos passos. Outro agente do mesmo projeto pode chamar `start_session` e `claim_next_handoff` para receber o handoff pendente. O serviço guarda apenas os campos estruturados enviados; não captura transcrições ou chamadas de ferramenta.
+O cliente resolve automaticamente o nome do projeto pelo repositório Git atual (ou pelo diretório atual fora de um repositório). `start_session` cria uma sessão; `create_handoff` a encerra e guarda resumo, decisões, bloqueios e próximos passos. Outro agente do mesmo projeto pode chamar `start_session` e `claim_next_handoff` para receber o handoff pendente. As ferramentas MCP não capturam transcrições ou chamadas de ferramenta por padrão.
 
 `remember` grava uma memória explícita. `context` busca resultados e limita o texto para controlar o orçamento de contexto. Configure `base_url` para apontar para uma instância remota autenticada.
 
+### Captura automática de conversas do Codex
+
+O arquivo `.codex/hooks.json` configura hooks locais para iniciar uma sessão,
+registrar cada prompt e resposta final e guardar um handoff ao encerrar. No backend
+Markdown, cada turno é persistido imediatamente no arquivo da sessão, e retries com
+o mesmo `turn_id` não duplicam mensagens. A captura não inclui chamadas ou resultados
+de ferramentas. O backend de banco mantém o comportamento anterior com spool temporário.
+
+Os hooks respeitam `memory.toml`, `MEMORY_CONFIG` e `MEMORY_REPOSITORY`. Revise e confie
+os hooks no Codex quando solicitado. A captura guarda o texto da conversa; ela não faz
+commit ou push automático.
+
 ## Integração MCP
 
-Configure o host MCP para iniciar `memory mcp`. O servidor usa `stdio` e aponta para o mesmo banco local da API e da CLI.
+Configure o host MCP para iniciar `memory mcp`. O servidor usa `stdio` e o mesmo backend configurado para a API e a CLI.
 
-Ferramentas de leitura: `memory_search`, `memory_get`, `memory_history`, `memory_compaction_preview`. Escrita: `memory_create`, `memory_update`, `memory_session_start`, `memory_session_handoff`. `memory_handoff_claim` reivindica atomicamente o handoff mais antigo do projeto; `memory_handoff_complete` encerra o handoff reivindicado. Administrativas (exigem `confirm=true`): `memory_delete`, `memory_compaction_apply`, `memory_share`, `memory_resolve_conflict`.
+Ferramentas de leitura: `memory_search`, `memory_get`, `memory_history`, `memory_compaction_preview`. Escrita: `memory_create`, `memory_update`, `memory_session_start`, `memory_session_handoff`. `memory_handoff_claim` reivindica atomicamente no mesmo checkout o handoff mais antigo do projeto; `memory_handoff_complete` encerra o handoff reivindicado. Administrativas (exigem `confirm=true`): `memory_delete`, `memory_compaction_apply`, `memory_share` (somente banco), `memory_resolve_conflict`. No backend Markdown, `memory_compaction_preview` registra a proposta no diário sem arquivar as fontes.
 
 ## Uso compartilhado
 
-Copie `.env.shared.example` para `.env`, defina uma senha aleatória com letras, números, `_` e `-`, e inicie:
+Para o backend de banco, configure `MEMORY_STORAGE_BACKEND=database`. Copie `.env.shared.example` para `.env`, defina uma senha aleatória com letras, números, `_` e `-`, e inicie:
 
 ```sh
 docker compose up -d --build
@@ -83,7 +178,7 @@ CLI equivalente (dono local): `memory export --output backup.json`, `memory impo
 
 `GET /v1/metrics` retorna contagens por status, bytes totais, grants ativos e compactações pendentes, sem expor conteúdo.
 
-## Configuração
+## Configuração do backend de banco
 
 `MEMORY_DATABASE_URL` aceita URL SQLite ou PostgreSQL. `MEMORY_AUTH_REQUIRED=true` exige token bearer nas chamadas HTTP. Tokens são criados com `memory token create --owner-id <id>`; o valor do token só é exibido na criação.
 

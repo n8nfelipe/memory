@@ -1,0 +1,55 @@
+{
+  "description": "Capture Codex conversation turns in the local llm-memory database.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"$(git rev-parse --show-toplevel)\" --no-sync python \"$(git rev-parse --show-toplevel)/.codex/hooks/memory_capture.py\"",
+            "timeout": 10,
+            "statusMessage": "Loading and starting local memory session",
+            "additionalContextLimit": 2500
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"$(git rev-parse --show-toplevel)\" --no-sync python \"$(git rev-parse --show-toplevel)/.codex/hooks/memory_capture.py\"",
+            "timeout": 10,
+            "statusMessage": "Saving prompt to local memory"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"$(git rev-parse --show-toplevel)\" --no-sync python \"$(git rev-parse --show-toplevel)/.codex/hooks/memory_capture.py\"",
+            "timeout": 10,
+            "statusMessage": "Saving response to local memory"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"$(git rev-parse --show-toplevel)\" --no-sync python \"$(git rev-parse --show-toplevel)/.codex/hooks/memory_capture.py\"",
+            "timeout": 3,
+            "statusMessage": "Saving conversation transcript"
+          }
+        ]
+      }
+    ]
+  }
+}
