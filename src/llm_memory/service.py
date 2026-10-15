@@ -171,14 +171,35 @@ def create_memory(session: Session, data: MemoryCreate, owner_id: str) -> tuple[
     warnings = []
     possible_conflicts: list[Memory] = []
     new_tokens = set(re.findall(r"[\w-]+", normalized))
+    opposing_terms = (
+        {"like", "dislike"},
+        {"likes", "dislikes"},
+        {"love", "hate"},
+        {"loves", "hates"},
+        {"prefer", "avoid"},
+        {"prefers", "avoids"},
+    )
+    compared_content: set[str] = set()
     for item in existing:
         old_normalized = re.sub(r"\s+", " ", item.content).strip().casefold()
         if old_normalized == normalized:
             warnings.append(f"possible_exact_duplicate:{item.id}")
             continue
+        if old_normalized in compared_content:
+            continue
+        compared_content.add(old_normalized)
         old_tokens = set(re.findall(r"[\w-]+", old_normalized))
         overlap = len(new_tokens & old_tokens)
-        if item.kind == data.kind and overlap >= 2 and overlap / max(len(new_tokens | old_tokens), 1) >= 0.4:
+        has_opposing_terms = any(
+            len(pair & new_tokens) == 1 and len(pair & old_tokens) == 1
+            for pair in opposing_terms
+        )
+        if (
+            item.kind == data.kind
+            and has_opposing_terms
+            and overlap >= 2
+            and overlap / max(len(new_tokens | old_tokens), 1) >= 0.4
+        ):
             warnings.append(f"possible_conflict_review:{item.id}")
             possible_conflicts.append(item)
     memory = Memory(
@@ -209,23 +230,23 @@ def create_memory(session: Session, data: MemoryCreate, owner_id: str) -> tuple[
 def update_memory(session: Session, memory: Memory, data: MemoryPatch, actor: str) -> Memory:
     if memory.version != data.expected_version:
         raise HTTPException(status_code=409, detail={"code": "version_conflict", "message": "Memory version changed"})
-    changes = data.model_dump(exclude_unset=True, exclude={"expected_version"})
-    if "content" in changes and changes["content"] is not None:
-        session.add(MemoryVersion(id=new_id(), memory_id=memory.id, version=memory.version,
-                                  content=memory.content, changed_by=actor))
-        memory.content = str(changes["content"]).strip()
-    if "kind" in changes and changes["kind"] is not None:
-        memory.kind = str(changes["kind"])
-    if "confidence" in changes and changes["confidence"] is not None:
-        memory.confidence = str(changes["confidence"])
-    if "tags" in changes and changes["tags"] is not None:
-        memory.tags = tags_dump(changes["tags"])
-    if "expires_at" in changes:
-        memory.expires_at = changes["expires_at"]
-    memory.version += 1
-    memory.updated_at = utcnow()
-    _index_memory(session, memory)
     try:
+        changes = data.model_dump(exclude_unset=True, exclude={"expected_version"})
+        if "content" in changes and changes["content"] is not None:
+            session.add(MemoryVersion(id=new_id(), memory_id=memory.id, version=memory.version,
+                                      content=memory.content, changed_by=actor))
+            memory.content = str(changes["content"]).strip()
+        if "kind" in changes and changes["kind"] is not None:
+            memory.kind = str(changes["kind"])
+        if "confidence" in changes and changes["confidence"] is not None:
+            memory.confidence = str(changes["confidence"])
+        if "tags" in changes and changes["tags"] is not None:
+            memory.tags = tags_dump(changes["tags"])
+        if "expires_at" in changes:
+            memory.expires_at = changes["expires_at"]
+        memory.version += 1
+        memory.updated_at = utcnow()
+        _index_memory(session, memory)
         session.commit()
     except StaleDataError as exc:
         session.rollback()
